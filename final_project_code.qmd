@@ -1,0 +1,125 @@
+---
+title: "Untitled"
+format: html
+---
+
+Website where datasets are found
+https://data.cdc.gov/500-Cities-Places/PLACES-County-Data-GIS-Friendly-Format-2025-releas/i46a-9kgh/about_data
+
+https://www.epa.gov/smartgrowth/smart-location-mapping#walkability
+National Walkability Index -> Download data for all areas with coverage (ZIP files)
+
+https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.2025.html#list-tab-1883739534
+
+```{r}
+# library
+library(tidyverse)
+library(sf)
+```
+
+```{r}
+getwd()
+
+# Open Data
+# Open the CDC CSV
+places_raw <- read_csv(
+  list.files("Raw Data", pattern = "^PLACES.*\\.csv$", full.names = TRUE),
+  col_types = cols(.default = "c")
+)
+
+# Open EPA walkability
+epa_raw <- st_read("Raw Data/Natl_WI.gdb") |>
+  st_drop_geometry()
+
+# Open county boundaries
+boundaries <- st_read(
+  "Raw Data/cb_2025_us_county_500k/cb_2025_us_county_500k.shp"
+)
+
+# Make column names lowercase
+names(places_raw) <- tolower(names(places_raw))
+names(epa_raw) <- tolower(names(epa_raw))
+names(boundaries) <- tolower(names(boundaries))
+```
+
+```{r}
+# Select county identifiers and health prevalence
+places <- places_raw |>
+  select(
+    county_fips = countyfips,
+    county_name = countyname,
+    state = stateabbr,
+    diabetes_adj = diabetes_adjprev,
+    depression_adj = depression_adjprev,
+    diabetes_crude = diabetes_crudeprev,
+    depression_crude = depression_crudeprev
+  ) |>
+  mutate(
+    across(starts_with(c("diabetes_", "depression_")), as.numeric)
+  ) # Convert prevalence values from text to numbers
+
+# Select county identifiers, walkability, and population weights
+walkability <- epa_raw |>
+  select(
+    statefp,
+    countyfp,
+    walkability = natwalkind,
+    population = totpop
+  )
+
+# Select county identifiers, names, and map geometry
+boundaries <- boundaries |>
+  select(
+    county_fips = geoid,
+    county_name = name
+  )
+```
+
+```{r}
+# Calculate population-weighted county walkability
+# EPA measures walkability at the census block-group level, but diabetes and depression data from CDC PLACES are at the county level
+walkability_county <- walkability |>
+  mutate(
+    county_fips = paste0(
+      sprintf("%02d", as.integer(statefp)),
+      sprintf("%03d", as.integer(countyfp))
+    ),
+    walkability = as.numeric(walkability),
+    population = as.numeric(population)
+  ) |>
+  filter(
+    !is.na(walkability),
+    between(walkability, 1, 20),
+    !is.na(population),
+    population > 0
+  ) |>
+  group_by(county_fips) |>
+  summarise(
+    walkability = weighted.mean(walkability, population),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Add walkability to the health data; keep all CDC counties
+county_data <- places |>
+    left_join( # Keep every CDC county, even if walkability is unavailable
+        walkability_county,
+        by = "county_fips", # Match counties using their five-digit FIPS
+        relationship = "one-to-one" # Stop if either table has duplicate county keys
+    )
+
+# Attach polygons for mapping
+county_map <- boundaries |>
+    select(county_fips) |> # Keep the merge key and automatically retain geometry
+    inner_join( # Keep only counties present in both boundaries and health data
+        county_data,
+        by = "county_fips",
+        relationship = "one-to-one"
+    )
+
+# Check missing values
+colSums( # Count missing values in each column
+    is.na(county_data)
+)
+```
