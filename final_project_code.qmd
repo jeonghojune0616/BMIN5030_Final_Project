@@ -122,4 +122,16 @@ county_map <- boundaries |>
 colSums( # Count missing values in each column
     is.na(county_data)
 )
+
+# Check which health-data counties were omitted from the map
+anti_join( # Which rows in my first dataset do NOT have a match in my second dataset?
+  county_data,
+  st_drop_geometry(boundaries),
+  by = "county_fips"
+)
+# If anti_join() returns 0 rows, it means every county in county_data has a matching identifier in boundaries.
+
+# Confirm cleaned data
+str(county_data)
+str(county_map)
 ```
